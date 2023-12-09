@@ -1,5 +1,12 @@
 var NAVTREEINDEX1 =
 {
+"struct____ApiCallbacks.html#a0d3c5e397c739a9babb32b22fa47fce4":[1,8,10,8],
+"struct____ApiCallbacks.html#a295fb04bb6f3e7c652b4b1fc7faea3e9":[1,8,10,5],
+"struct____ApiCallbacks.html#a4736e86a8272d0c90888e6f8acbe6ce7":[1,8,10,2],
+"struct____ApiCallbacks.html#a6b1768366c1d2947553af81492cd2473":[1,8,10,3],
+"struct____ApiCallbacks.html#a6e421b1cb26651eb81b642cca00b96b0":[1,8,10,0],
+"struct____ApiCallbacks.html#a97fad44f98a63d3507f58baab0623723":[1,8,10,1],
+"struct____ApiCallbacks.html#ae87470524e69424f611bc075c523b584":[1,8,10,7],
 "struct____AuthCallbacks.html":[1,8,9],
 "struct____AuthCallbacks.html#a096f97f4ab65325b09776f42b98b769b":[1,8,9,3],
 "struct____AuthCallbacks.html#a2489cd12b331a1c1121891d6ce793707":[1,8,9,6],
