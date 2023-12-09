@@ -114,16 +114,16 @@ STATUS readFileCredentials(PFileCredentialProvider pFileCredentialProvider)
     FILE* fp = NULL;
     CHAR credentialMarker[12];
     CHAR thirdTokenStr[MAX(MAX_EXPIRATION_LEN, MAX_SECRET_KEY_LEN) + 1], fourthTokenStr[MAX_SECRET_KEY_LEN + 1], accessKeyId[MAX_ACCESS_KEY_LEN + 1];
-    CHAR sessionToken[MAX_SESSION_TOKEN_LEN + 1];
-    PCHAR expirationStr = NULL, secretKey = NULL;
+    CHAR fifthTokenStr[MAX_SESSION_TOKEN_LEN + 1];
+    PCHAR expirationStr = NULL, secretKey = NULL, sessionToken = NULL;
     UINT32 accessKeyIdLen = 0, secretKeyLen = 0, sessionTokenLen = 0;
     UINT64 expiration, currentTime;
 
     CHK(pFileCredentialProvider != NULL && pFileCredentialProvider->credentialsFilepath != NULL, STATUS_NULL_ARG);
 
-    // Refresh the credentials by reading from the credentials file if needed
+    // Only refresh the credentials by reading from the credentials file if needed.
+    // If we already have credentials and they are not expiring soon, we return successfully here.
     currentTime = pFileCredentialProvider->getCurrentTimeFn(pFileCredentialProvider->customData);
-
     CHK(pFileCredentialProvider->pAwsCredentials == NULL ||
             currentTime + CREDENTIAL_FILE_READ_GRACE_PERIOD > pFileCredentialProvider->pAwsCredentials->expiration,
         retStatus);
@@ -146,8 +146,8 @@ STATUS readFileCredentials(PFileCredentialProvider pFileCredentialProvider)
     // empty buffers
     thirdTokenStr[0] = '\0';
     fourthTokenStr[0] = '\0';
+    fifthTokenStr[0] = '\0';
     accessKeyId[0] = '\0';
-    sessionToken[0] = '\0';
 
     /*
      * Currently the credential file can have two formats, one is "CREDENTIALS accessKey expiration secretKey sessionToken", and
@@ -155,7 +155,7 @@ STATUS readFileCredentials(PFileCredentialProvider pFileCredentialProvider)
      */
 
     FSCANF(fp, "%11s %" STR(MAX_ACCESS_KEY_LEN) "s %" STR(MAX_EXPIRATION_LEN) "s %" STR(MAX_SECRET_KEY_LEN) "s %" STR(MAX_SESSION_TOKEN_LEN) "s",
-           credentialMarker, accessKeyId, thirdTokenStr, fourthTokenStr, sessionToken);
+           credentialMarker, accessKeyId, thirdTokenStr, fourthTokenStr, fifthTokenStr);
 
     // if the fourth token is empty, it means the credential file only has accessKey and secretKey
     if (fourthTokenStr[0] == '\0') {
@@ -163,6 +163,7 @@ STATUS readFileCredentials(PFileCredentialProvider pFileCredentialProvider)
     } else {
         expirationStr = thirdTokenStr;
         secretKey = fourthTokenStr;
+        sessionToken = fifthTokenStr;
     }
 
     CHK(STRCMP(credentialMarker, "CREDENTIALS") == 0, STATUS_FILE_CREDENTIAL_PROVIDER_INVALID_FILE_FORMAT);
@@ -170,10 +171,13 @@ STATUS readFileCredentials(PFileCredentialProvider pFileCredentialProvider)
     // Set the lengths
     accessKeyIdLen = (UINT32) STRNLEN(accessKeyId, MAX_ACCESS_KEY_LEN);
     secretKeyLen = (UINT32) STRNLEN(secretKey, MAX_SECRET_KEY_LEN);
-    sessionTokenLen = (UINT32) STRNLEN(sessionToken, MAX_SESSION_TOKEN_LEN);
+    sessionTokenLen = sessionToken == NULL ? 0 : (UINT32) STRNLEN(sessionToken, MAX_SESSION_TOKEN_LEN);
 
     if (expirationStr != NULL) {
-        convertTimestampToEpoch(expirationStr, currentTime / HUNDREDS_OF_NANOS_IN_A_SECOND, &expiration);
+        // It makes more sense for createDefaultCallbacksProviderWithFileAuth to fail if the credentials are expired
+        // than for it to succeed and let later service calls fail. Clients who cache credentials in a file will not
+        // see an error the first time they call createDefaultCallbacksProviderWithFileAuth without this check.
+        CHK_STATUS(convertTimestampToEpoch(expirationStr, currentTime / HUNDREDS_OF_NANOS_IN_A_SECOND, &expiration));
     } else {
         expiration = currentTime + MAX_ENFORCED_TOKEN_EXPIRATION_DURATION;
     }
