@@ -25,15 +25,13 @@
 var NAVTREE =
 [
   [ "Amazon Kinesis Producer C SDK", "index.html", [
-    [ "README", "md_README.html", null ],
-    [ "Modules", "modules.html", "modules" ]
+    [ "README", "md_README.html", null ]
   ] ]
 ];
 
 var NAVTREEINDEX =
 [
-"group__CallbackStructsVersion.html",
-"struct____ApiCallbacks.html#a0d3c5e397c739a9babb32b22fa47fce4"
+"index.html"
 ];
 
 var SYNCONMSG = 'click to disable panel synchronisation';
