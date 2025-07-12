@@ -58,6 +58,12 @@ You can pass the following options to `cmake ..`.
 * `-DUNDEFINED_BEHAVIOR_SANITIZER` Build with UndefinedBehaviorSanitizer
 * `-DALIGNED_MEMORY_MODEL` Build for aligned memory model only devices. Default is OFF.
 * `-DLOCAL_OPENSSL_BUILD` Whether or not to use local OpenSSL build. Default is OFF.
+* `-DCONSTRAINED_DEVICE` -- Change thread stack size to 0.5Mb, needed for Alpine.
+* `-DAWS_KVS_USE_LEGACY_ENDPOINT_ONLY` -- Use only legacy IPV4-only endpoints (ignores env vars). Default is OFF.
+* `-DAWS_KVS_USE_DUAL_STACK_ENDPOINT_ONLY` -- Use only dual-stack endpoints (ignores env vars). Default is OFF.
+* `-DAWS_KVS_IPV4_ONLY` -- Use only IPv4 addresses from DNS (ignores env vars). Default is OFF.
+* `-DAWS_KVS_IPV6_ONLY` -- Use only IPv6 addresses from DNS (ignores env vars). Default is OFF.
+* `-DAWS_KVS_IPV4_AND_IPV6_ONLY` -- Use both IPv4 and IPv6 addresses from DNS (ignores env vars). Default is OFF.
 
 
 DMEMORY_SANITIZER, DTHREAD_SANITIZER etc. flags works only with clang compiler 
@@ -132,6 +138,51 @@ For audio only, run `./kvsAudioOnlyStreamingSample <stream-name> <streaming_dura
 
 This will stream the audio files from the `samples/aacSampleFrames` or `samples/alawSampleFrames` (as per the choice of audio codec in the last argument) respectively. 
 
+### Running with IoT credential provider
+
+To run the samples with IoT credential provider:
+
+1. Run the IoT thing generation script available under `scripts`: `source scripts/generate-iot-credential.sh`. For more information on IoT set up, visit [AWS KVS IoT Set up](https://docs.aws.amazon.com/kinesisvideostreams/latest/dg/how-iot.html)
+2. Uncomment `#define IOT_CORE_ENABLE_CREDENTIALS 1` in the relevant sample
+3. Build the changes: `make`
+4. Run the sample using the instructions in previous section.
+
+### Fragment metadata
+
+`./kvsVideoOnlyRealtimeStreamingSample` is the only sample that has the [fragment metadata](https://docs.aws.amazon.com/kinesisvideostreams/latest/dg/how-meta.html) implemented out of the box.
+
+In addition to the required arguments above, this sample has an additional argument:
+```shell
+./kvsVideoOnlyRealtimeStreamingSample <stream-name> <video-codec> <streaming-duration-in-seconds> <sample-location> <num-metadata>
+```
+
+`num-metadata` -- the number of sample fragment metadata key-value pairs that are added to each fragment. Min: 0, Max: 10. Default: 10.
+
+### Setting log levels
+
+
+### Setup logging:
+Set up the desired log level. The log levels and corresponding values currently available are:
+1. `LOG_LEVEL_VERBOSE` ---- 1
+2. `LOG_LEVEL_DEBUG`   ---- 2
+3. `LOG_LEVEL_INFO`    ---- 3
+4. `LOG_LEVEL_WARN`    ---- 4
+5. `LOG_LEVEL_ERROR`   ---- 5
+6. `LOG_LEVEL_FATAL`   ---- 6
+7. `LOG_LEVEL_SILENT`  ---- 7
+8. `LOG_LEVEL_PROFILE` ---- 8
+
+To set a log level, you can set it using the deviceInfo structure. 
+```
+pDeviceInfo->clientInfo.loggerLogLevel = LOG_LEVEL_DEBUG;
+```
+
+By default, our samples set the log level to `LOG_LEVEL_DEBUG`.
+
+The SDK also tracks entry and exit of functions which increases the verbosity of the logs. This will be useful when you want to track the transitions within the codebase. To do so, you need to set log level to `LOG_LEVEL_VERBOSE` and add the following to the cmake file:
+`add_definitions(-DLOG_STREAMING)`
+Note: This log level is extremely VERBOSE and could flood the files if using file based logging strategy.
+
 ### Run unit tests
 Since these tests exercise networking you need to have AWS credentials specified, specifically you need to:
 
@@ -150,6 +201,23 @@ For video only: `createOfflineVideoStreamInfoProviderWithCodecs()`
 For video and audio: `createOfflineAudioVideoStreamInfoProviderWithCodecs()`
 
 The 2 APIs are available in [this](https://github.com/awslabs/amazon-kinesis-video-streams-producer-c/blob/412aab82c99a72f9dbde975f5fea81ffdc844ae5/src/include/com/amazonaws/kinesis/video/cproducer/Include.h) header file.
+
+### KVS Endpoints and DNS resolution
+The default endpoints and DNS resolution chain is implemented by the SDK. It sequentially checks each place where you can set the configuration for these parameters, and then selects the first one you set. The predefined sequence is as follows:
+
+#### Endpoint Configuration
+1. The `controlPlaneUrl` parameter for `createAbstractDefaultCallbacksProvider`.
+2. Endpoint configuration CMake parameters: (`-DAWS_KVS_USE_LEGACY_ENDPOINT_ONLY=TRUE`, `-DAWS_KVS_USE_DUAL_STACK_ENDPOINT_ONLY=TRUE`)
+3. Environment variables: (`export AWS_USE_DUALSTACK_ENDPOINT=TRUE`)
+  - If `AWS_USE_DUALSTACK_ENDPOINT` is `TRUE` (case-insensitive), the dual-stack endpoint will be used.
+4. Otherwise, the legacy endpoint will be constructed.
+
+With 2, 3, and 4, the endpoint will be constructed based on the region provided to `createAbstractDefaultCallbacksProvider`.
+
+#### DNS filtering
+1. DNS resolution CMake parameters: (`-DAWS_KVS_IPV4_ONLY=TRUE`, `-DAWS_KVS_IPV6_ONLY=TRUE`, `-DAWS_KVS_IPV4_AND_IPV6_ONLY=TRUE`)
+2. Environment variables (`export AWS_KVS_USE_IPV4=TRUE`, `export AWS_KVS_USE_IPV6=TRUE`)
+3. Otherwise, no filtering will take place. Both IPv4 and IPv6 IP addresses, if returned by DNS, may be used.
 
 ## DEBUG
 * When building OpenSSL during `cmake ..`, if you encounter an architecture error such as `ld: symbol(s) not found for architecture i386`, building with a local OpenSSL build may help. First install OpenSSL 1.1 (for Mac: `brew install openssl@1.1`). Next set `export PKG_CONFIG_PATH="<YOUR-PATH>/openssl@1.1/lib/pkgconfig"` (your path can be printed to terminal using `which openssl` on Linux/Mac). Now set the following flag to ON when building: `cmake .. -DLOCAL_OPENSSL_BUILD=ON`. If there are still errors regarding locating the local OpenSSL library:

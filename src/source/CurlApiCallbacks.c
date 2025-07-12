@@ -14,6 +14,7 @@ STATUS createCurlApiCallbacks(PCallbacksProvider pCallbacksProvider, PCHAR regio
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS, status;
     PCurlApiCallbacks pCurlApiCallbacks = NULL;
+    KvsControlPlaneEndpointType controlPlaneEndpointType;
 
     CHK(pCallbacksProvider != NULL && ppCurlApiCallbacks != NULL, STATUS_NULL_ARG);
     CHK(certPath == NULL || STRNLEN(certPath, MAX_PATH_LEN + 1) <= MAX_PATH_LEN, STATUS_INVALID_CERT_PATH_LENGTH);
@@ -77,15 +78,11 @@ STATUS createCurlApiCallbacks(PCallbacksProvider pCallbacksProvider, PCHAR regio
         DLOGW("Failed to generate user agent string with error 0x%08x.", status);
     }
 
-    // Set the control plane URL
-    if (controlPlaneUrl == NULL || controlPlaneUrl[0] == '\0') {
-        // Create a fully qualified URI
-        SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
-                 pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX);
-        // If region is in CN, add CN region uri postfix
-        if (STRSTR(pCurlApiCallbacks->region, "cn-")) {
-            STRCAT(pCurlApiCallbacks->controlPlaneUrl, ".cn");
-        }
+    // Construct Control Plane URL
+    if (IS_NULL_OR_EMPTY_STRING(controlPlaneUrl)) {
+        CHK_STATUS(determineKvsControlPlaneEndpointType(&controlPlaneEndpointType));
+        CHK_STATUS(
+            constructControlPlaneUrl(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, pCurlApiCallbacks->region, controlPlaneEndpointType));
     } else {
         STRNCPY(pCurlApiCallbacks->controlPlaneUrl, controlPlaneUrl, MAX_URI_CHAR_LEN);
     }
@@ -178,6 +175,91 @@ CleanUp:
     if (ppCurlApiCallbacks != NULL) {
         *ppCurlApiCallbacks = pCurlApiCallbacks;
     }
+
+    LEAVES();
+    return retStatus;
+}
+
+STATUS determineKvsControlPlaneEndpointType(PKvsControlPlaneEndpointType pEndpointType)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    BOOL isDualStack = FALSE;
+    const char* envValue;
+
+    CHK(pEndpointType != NULL, STATUS_NULL_ARG);
+
+#if defined(AWS_KVS_USE_LEGACY_ENDPOINT_ONLY)
+    *pEndpointType = ENDPOINT_TYPE_LEGACY;
+    DLOGI("Using legacy endpoint from AWS_KVS_USE_LEGACY_ENDPOINT_ONLY");
+#elif defined(AWS_KVS_USE_DUAL_STACK_ENDPOINT_ONLY)
+    *pEndpointType = ENDPOINT_TYPE_DUAL_STACK;
+    DLOGI("Using dual stack endpoint from AWS_KVS_USE_DUAL_STACK_ENDPOINT_ONLY");
+#else
+    envValue = GETENV(CONTROL_PLANE_USE_DUAL_STACK_ENDPOINT_ENV_VAR);
+
+    // Check for "true" to make sure "false" actually disables it
+    // https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoints.html
+    isDualStack = (envValue != NULL) && (0 == STRNCMPI(envValue, "true", 4));
+    *pEndpointType = isDualStack ? ENDPOINT_TYPE_DUAL_STACK : ENDPOINT_TYPE_LEGACY;
+
+    DLOGI("Using %s endpoint from environment", endpointTypeToString(*pEndpointType));
+#endif
+
+CleanUp:
+    CHK_LOG_ERR(retStatus);
+
+    LEAVES();
+    return retStatus;
+}
+
+const char* endpointTypeToString(const KvsControlPlaneEndpointType type)
+{
+    switch (type) {
+        case ENDPOINT_TYPE_LEGACY:
+            return "LEGACY";
+        case ENDPOINT_TYPE_DUAL_STACK:
+            return "DUAL_STACK";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+STATUS constructControlPlaneUrl(const char* buffer, SIZE_T bufferSize, const char* region, KvsControlPlaneEndpointType endpointType)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    const char* serviceNamePostfix = "";
+    const char* postfix;
+
+    CHK(buffer != NULL && region != NULL, STATUS_NULL_ARG);
+    CHK(bufferSize > 0, STATUS_INVALID_ARG_LEN);
+
+    if (0 == STRNCMP(region, AWS_ISO_B_REGION_PREFIX, STRLEN(AWS_ISO_B_REGION_PREFIX))) {
+        // Top Secret Cloud regions: https://kinesisvideo-fips.us-isob-east-1.sc2s.sgov.gov
+        serviceNamePostfix = AWS_KVS_FIPS_ENDPOINT_POSTFIX;
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX_ISO_B : CONTROL_PLANE_URI_POSTFIX_ISO_B_DUAL_STACK;
+    } else if (0 == STRNCMP(region, AWS_ISO_REGION_PREFIX, STRLEN(AWS_ISO_REGION_PREFIX))) {
+        // Secret Cloud regions: https://kinesisvideo-fips.us-iso-east-1.c2s.ic.gov
+        serviceNamePostfix = AWS_KVS_FIPS_ENDPOINT_POSTFIX;
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX_ISO : CONTROL_PLANE_URI_POSTFIX_ISO_DUAL_STACK;
+    } else if (0 == STRNCMP(region, AWS_GOV_CLOUD_REGION_PREFIX, STRLEN(AWS_GOV_CLOUD_REGION_PREFIX))) {
+        // US Govcloud regions: https://kinesisvideo-fips.us-gov-east-1.amazonaws.com
+        serviceNamePostfix = AWS_KVS_FIPS_ENDPOINT_POSTFIX;
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX : CONTROL_PLANE_URI_POSTFIX_DUAL_STACK;
+    } else if (0 == STRNCMP(region, AWS_CN_REGION_PREFIX, STRLEN(AWS_CN_REGION_PREFIX))) {
+        // China regions: https://kinesisvideo.cn-north-1.amazonaws.com.cn"
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX_CN : CONTROL_PLANE_URI_POSTFIX_CN_DUAL_STACK;
+    } else {
+        // Standard regions: https://kinesisvideo.us-west-2.amazonaws.com
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX : CONTROL_PLANE_URI_POSTFIX_DUAL_STACK;
+    }
+
+    // Create a fully qualified URI
+    SNPRINTF((PCHAR) buffer, bufferSize, "%s%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME, serviceNamePostfix, region, postfix);
+
+CleanUp:
+    CHK_LOG_ERR(retStatus);
 
     LEAVES();
     return retStatus;
@@ -994,15 +1076,17 @@ STATUS createStreamCurl(UINT64 customData, PCHAR deviceName, PCHAR streamName, P
 
 CleanUp:
 
+    if (startLocked) {
+        // Release the lock to let the awaiting handler thread to continue
+        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
+    }
+
     if (STATUS_FAILED(retStatus)) {
         if (IS_VALID_TID_VALUE(threadId)) {
             THREAD_CANCEL(threadId);
         }
 
         freeCurlRequest(&pCurlRequest);
-    } else if (startLocked) {
-        // Release the lock to let the awaiting handler thread to continue
-        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
     }
 
     if (shutdownLocked) {
@@ -1226,15 +1310,17 @@ STATUS describeStreamCurl(UINT64 customData, PCHAR streamName, PServiceCallConte
 
 CleanUp:
 
+    if (startLocked) {
+        // Release the lock to let the awaiting handler thread to continue
+        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
+    }
+
     if (STATUS_FAILED(retStatus)) {
         if (IS_VALID_TID_VALUE(threadId)) {
             THREAD_CANCEL(threadId);
         }
 
         freeCurlRequest(&pCurlRequest);
-    } else if (startLocked) {
-        // Release the lock to let the awaiting handler thread to continue
-        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
     }
 
     if (shutdownLocked) {
@@ -1317,7 +1403,7 @@ PVOID describeStreamCurlHandler(PVOID arg)
     UINT32 i, strLen, resultLen;
     INT32 tokenCount;
     UINT64 retention;
-    BOOL jsonInStreamDescription = FALSE, requestTerminating = FALSE;
+    BOOL jsonInStreamDescription = FALSE, requestTerminating = FALSE, responseReceived = FALSE;
     StreamDescription streamDescription;
     STREAM_HANDLE streamHandle = INVALID_STREAM_HANDLE_VALUE;
     SERVICE_CALL_RESULT callResult = SERVICE_CALL_RESULT_NOT_SET;
@@ -1350,8 +1436,7 @@ PVOID describeStreamCurlHandler(PVOID arg)
     CHK(pCurlResponse->callInfo.callResult != SERVICE_CALL_RESULT_NOT_SET, STATUS_INVALID_OPERATION);
     pResponseStr = pCurlResponse->callInfo.responseData;
     resultLen = pCurlResponse->callInfo.responseDataLen;
-
-    DLOGD("[%s] DescribeStream API response: %.*s", streamDescription.streamName, resultLen, pResponseStr);
+    responseReceived = TRUE;
 
     // skip json parsing if call result not ok
     CHK(pCurlResponse->callInfo.callResult == SERVICE_CALL_RESULT_OK && resultLen != 0 && pResponseStr != NULL, retStatus);
@@ -1429,6 +1514,10 @@ PVOID describeStreamCurlHandler(PVOID arg)
     }
 
 CleanUp:
+
+    if (responseReceived) {
+        DLOGD("[%s] DescribeStream API response: %.*s", streamDescription.streamName, resultLen, pResponseStr);
+    }
 
     // Preserve the values as we need to free the request before the event notification
     if (pCurlRequest->pCurlResponse != NULL) {
@@ -1534,15 +1623,18 @@ STATUS getStreamingEndpointCurl(UINT64 customData, PCHAR streamName, PCHAR apiNa
 
 CleanUp:
 
+    if (startLocked) {
+        // Release the lock to let the awaiting handler thread to continue.
+        // This needs to be done before freeCurlRequest because there we will free the startLock mutex
+        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
+    }
+
     if (STATUS_FAILED(retStatus)) {
         if (IS_VALID_TID_VALUE(threadId)) {
             THREAD_CANCEL(threadId);
         }
 
         freeCurlRequest(&pCurlRequest);
-    } else if (startLocked) {
-        // Release the lock to let the awaiting handler thread to continue
-        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
     }
 
     if (shutdownLocked) {
@@ -1863,15 +1955,17 @@ STATUS tagResourceCurl(UINT64 customData, PCHAR streamArn, UINT32 tagCount, PTag
 
 CleanUp:
 
+    if (startLocked) {
+        // Release the lock to let the awaiting handler thread to continue
+        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
+    }
+
     if (STATUS_FAILED(retStatus)) {
         if (IS_VALID_TID_VALUE(threadId)) {
             THREAD_CANCEL(threadId);
         }
 
         freeCurlRequest(&pCurlRequest);
-    } else if (startLocked) {
-        // Release the lock to let the awaiting handler thread to continue
-        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
     }
 
     if (shutdownLocked) {

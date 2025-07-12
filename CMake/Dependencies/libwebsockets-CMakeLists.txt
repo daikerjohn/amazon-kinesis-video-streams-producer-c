@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.6.3)
 
-project(libwebsocket-download NONE)
+project(libwebsocket-download LANGUAGES C)
 
 include(ExternalProject)
 
@@ -18,13 +18,18 @@ else()
   set(LWS_WITH_MBEDTLS OFF)
 endif()
 
+# v3.2.3 of LWS does not support DISABLE_WERROR flag. Needed for Clang-14 due to build warnings
+set(LWS_CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-error")
+
 ExternalProject_Add(project_libwebsockets
     GIT_REPOSITORY    https://github.com/warmcat/libwebsockets.git
     GIT_TAG           v3.2.3
     PREFIX            ${CMAKE_CURRENT_BINARY_DIR}/build
     CMAKE_ARGS
         -DCMAKE_INSTALL_PREFIX=${OPEN_SRC_INSTALL_PREFIX}
+        -DCMAKE_C_FLAGS=${LWS_CMAKE_C_FLAGS}
         -DLWS_WITH_HTTP2=1
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DLWS_HAVE_HMAC_CTX_new=1
         -DLWS_HAVE_SSL_EXTRA_CHAIN_CERTS=1
         -DLWS_HAVE_OPENSSL_ECDH_H=1

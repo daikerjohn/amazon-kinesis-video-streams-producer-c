@@ -31,7 +31,7 @@ STATUS createCurlResponse(PCurlRequest pCurlRequest, PCurlResponse* ppCurlRespon
 
     // init putMedia related members
     pCurlResponse->endOfStream = FALSE;
-    pCurlResponse->paused = TRUE;
+    ATOMIC_STORE_BOOL(&pCurlResponse->paused, TRUE);
     pCurlResponse->debugDumpFile = FALSE;
     pCurlResponse->debugDumpFilePath[0] = '\0';
 
@@ -179,6 +179,37 @@ STATUS initializeCurlSession(PRequestInfo pRequestInfo, PCallInfo pCallInfo, CUR
         curl_easy_setopt(pCurl, CURLOPT_SSL_VERIFYHOST, 2L);
         curl_easy_setopt(pCurl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
     }
+
+#if defined(AWS_KVS_IPV4_ONLY)
+    curl_easy_setopt(pCurl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    DLOGD("Curl resolving IPV4 through AWS_KVS_IPV4_ONLY");
+#elif defined(AWS_KVS_IPV6_ONLY)
+    curl_easy_setopt(pCurl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V6);
+    DLOGD("Curl resolving IPV6 through AWS_KVS_IPV6_ONLY");
+#elif defined(AWS_KVS_IPV4_AND_IPV6_ONLY)
+    curl_easy_setopt(pCurl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
+    DLOGD("Curl resolving dual stack through AWS_KVS_IPV4_AND_IPV6_ONLY");
+#else
+    if (!IS_NULL_OR_EMPTY_STRING(GETENV(KVS_CURL_IPRESOLVE_V4_ENV_VAR))) {
+        curl_easy_setopt(pCurl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+        DLOGD("Curl resolving IPV4 through environment variable");
+    } else if (!IS_NULL_OR_EMPTY_STRING(GETENV(KVS_CURL_IPRESOLVE_V6_ENV_VAR))) {
+        curl_easy_setopt(pCurl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V6);
+        DLOGD("Curl resolving IPV6 through environment variable");
+    } else {
+        curl_easy_setopt(pCurl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
+        DLOGD("Curl resolving dual stack by default");
+    }
+#endif
+
+#ifndef NDEBUG
+    // Only available in debug build
+    // This setting will have curl print out the IP address that it resolved and connected to
+    // More info: https://everything.curl.dev/usingcurl/verbose/index.html
+    if (!IS_NULL_OR_EMPTY_STRING(GETENV(KVS_CURL_DEBUG_ENV_VAR))) {
+        curl_easy_setopt(pCurl, CURLOPT_VERBOSE, 1L);
+    }
+#endif
 
     // set request completion timeout in milliseconds
     if (pRequestInfo->completionTimeout != SERVICE_CALL_INFINITE_TIMEOUT) {
@@ -456,8 +487,8 @@ STATUS notifyDataAvailable(PCurlResponse pCurlResponse, UINT64 durationAvailable
         DLOGV("[%s] Note data received: duration(100ns): %" PRIu64 " bytes %" PRIu64 " for stream handle %" PRIu64,
               pCurlResponse->pCurlRequest->streamName, durationAvailable, sizeAvailable, pCurlResponse->pCurlRequest->uploadHandle);
 
-        if (pCurlResponse->paused && pCurlResponse->pCurl != NULL) {
-            pCurlResponse->paused = FALSE;
+        if (ATOMIC_LOAD_BOOL(&pCurlResponse->paused) && pCurlResponse->pCurl != NULL) {
+            ATOMIC_STORE_BOOL(&pCurlResponse->paused, FALSE);
             // frequent pause unpause causes curl segfault in offline scenario
             THREAD_SLEEP(10 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
             // un-pause curl
@@ -634,7 +665,7 @@ SIZE_T postReadCallback(PCHAR pBuffer, SIZE_T size, SIZE_T numItems, PVOID custo
     pCurlApiCallbacks = pCurlRequest->pCurlApiCallbacks;
     uploadHandle = pCurlResponse->pCurlRequest->uploadHandle;
 
-    if (pCurlResponse->paused) {
+    if (ATOMIC_LOAD_BOOL(&pCurlResponse->paused)) {
         bytesWritten = CURL_READFUNC_PAUSE;
         CHK(FALSE, retStatus);
     }
@@ -721,7 +752,7 @@ CleanUp:
             }
         }
     } else if (bytesWritten == CURL_READFUNC_PAUSE) {
-        pCurlResponse->paused = TRUE;
+        ATOMIC_STORE_BOOL(&pCurlResponse->paused, TRUE);
     }
 
     // Since curl is about to terminate gracefully, set flag to prevent shutdown thread from timing it out.
